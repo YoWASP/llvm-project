@@ -29,8 +29,10 @@
 #include "llvm/Support/SystemZ/zOSSupport.h"
 #include "llvm/Support/raw_ostream.h"
 #include <sys/stat.h>
+#if !defined(__wasi__)
 #include <sys/resource.h>
 #include <signal.h>
+#endif
 #include <fcntl.h>
 #if HAVE_UNISTD_H
 #include <unistd.h>
@@ -63,6 +65,7 @@ ProcessInfo::ProcessInfo() : Pid(0), ReturnCode(0) {}
 ErrorOr<std::string> sys::findProgramByName(StringRef Name,
                                             ArrayRef<StringRef> Paths) {
   assert(!Name.empty() && "Must have a name!");
+#if !defined(__wasi__)
   // Use the given path verbatim if it contains any slashes; this matches
   // the behavior of sh(1) and friends.
   if (Name.contains('/'))
@@ -85,12 +88,14 @@ ErrorOr<std::string> sys::findProgramByName(StringRef Name,
     if (sys::fs::can_execute(FilePath.c_str()))
       return std::string(FilePath); // Found the executable!
   }
+#endif
   return errc::no_such_file_or_directory;
 }
 
 static bool RedirectIO(std::optional<StringRef> Path, int FD, std::string *ErrMsg) {
   if (!Path) // Noop
     return false;
+#if !defined(__wasi__)
   std::string File;
   if (Path->empty())
     // Redirect empty paths to /dev/null
@@ -113,6 +118,7 @@ static bool RedirectIO(std::optional<StringRef> Path, int FD, std::string *ErrMs
     return true;
   }
   close(InFD); // Close the original FD
+#endif
   return false;
 }
 
@@ -138,6 +144,7 @@ static bool RedirectIO_PS(const std::string *Path, int FD, std::string *ErrMsg,
 static void TimeOutHandler(int Sig) {}
 
 static void SetMemoryLimits(unsigned size) {
+#ifndef __wasi__
   struct rlimit r;
   __typeof__(r.rlim_cur) limit = (__typeof__(r.rlim_cur))(size)*1048576;
 
@@ -150,6 +157,7 @@ static void SetMemoryLimits(unsigned size) {
   getrlimit(RLIMIT_RSS, &r);
   r.rlim_cur = limit;
   setrlimit(RLIMIT_RSS, &r);
+#endif
 #endif
 }
 
@@ -168,6 +176,12 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
                     ArrayRef<std::optional<StringRef>> Redirects,
                     unsigned MemoryLimit, std::string *ErrMsg,
                     BitVector *AffinityMask, bool DetachProcess) {
+#if defined(__wasi__)
+  if (ErrMsg)
+    *ErrMsg = std::string("WASI does not support spawning subprocesses");
+  return false;
+#else
+
   assert(!AffinityMask && "Starting a process with an affinity mask is "
                           "currently not supported on Unix!");
 
@@ -330,6 +344,7 @@ static bool Execute(ProcessInfo &PI, StringRef Program,
   PI.Process = child;
 
   return true;
+#endif
 }
 
 namespace llvm {
@@ -337,7 +352,7 @@ namespace sys {
 
 #if defined(_AIX)
 static pid_t(wait4)(pid_t pid, int *status, int options, struct rusage *usage);
-#elif !defined(__Fuchsia__)
+#elif !defined(__Fuchsia__) && !defined(__wasi__)
 using ::wait4;
 #endif
 
@@ -383,6 +398,9 @@ ProcessInfo llvm::sys::Wait(const ProcessInfo &PI,
                             std::string *ErrMsg,
                             std::optional<ProcessStatistics> *ProcStat,
                             bool Polling) {
+#if defined(__wasi__)
+  assert(false && "Unsupported");
+#else
   struct sigaction Act, Old;
   assert(PI.Pid && "invalid pid to wait on, process not started?");
 
@@ -500,6 +518,7 @@ ProcessInfo llvm::sys::Wait(const ProcessInfo &PI,
     WaitResult.ReturnCode = -2;
   }
   return WaitResult;
+#endif
 }
 
 std::error_code llvm::sys::ChangeStdinMode(fs::OpenFlags Flags) {
