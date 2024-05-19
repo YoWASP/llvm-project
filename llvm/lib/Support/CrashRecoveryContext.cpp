@@ -13,8 +13,15 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/thread.h"
 #include <cassert>
+#if HAVE_RAISE
+#include <csignal>
+#endif
+#if LLVM_ENABLE_THREADS
 #include <mutex>
+#endif
+#if HAVE_SETJMP
 #include <setjmp.h>
+#endif
 
 using namespace llvm;
 
@@ -31,7 +38,9 @@ struct CrashRecoveryContextImpl {
   const CrashRecoveryContextImpl *Next;
 
   CrashRecoveryContext *CRC;
+#ifdef HAVE_SETJMP
   ::jmp_buf JumpBuffer;
+#endif
   volatile unsigned Failed : 1;
   unsigned SwitchedThread : 1;
   unsigned ValidJumpBuffer : 1;
@@ -50,7 +59,7 @@ public:
   /// Called when the separate crash-recovery thread was finished, to
   /// indicate that we don't need to clear the thread-local CurrentContext.
   void setSwitchedThread() {
-#if defined(LLVM_ENABLE_THREADS) && LLVM_ENABLE_THREADS != 0
+#if LLVM_ENABLE_THREADS
     SwitchedThread = true;
 #endif
   }
@@ -72,19 +81,23 @@ public:
 
     CRC->RetCode = RetCode;
 
+#if HAVE_SETJMP
     // Jump back to the RunSafely we were called under.
     if (ValidJumpBuffer)
       longjmp(JumpBuffer, 1);
+#endif
 
     // Otherwise let the caller decide of the outcome of the crash. Currently
     // this occurs when using SEH on Windows with MSVC or clang-cl.
   }
 };
 
-std::mutex &getCrashRecoveryContextMutex() {
+#if LLVM_ENABLE_THREADS
+static std::mutex &getCrashRecoveryContextMutex() {
   static std::mutex CrashRecoveryContextMutex;
   return CrashRecoveryContextMutex;
 }
+#endif
 
 static bool gCrashRecoveryEnabled = false;
 
@@ -138,7 +151,9 @@ CrashRecoveryContext *CrashRecoveryContext::GetCurrent() {
 }
 
 void CrashRecoveryContext::Enable() {
+#if LLVM_ENABLE_THREADS
   std::lock_guard<std::mutex> L(getCrashRecoveryContextMutex());
+#endif
   // FIXME: Shouldn't this be a refcount or something?
   if (gCrashRecoveryEnabled)
     return;
@@ -147,7 +162,9 @@ void CrashRecoveryContext::Enable() {
 }
 
 void CrashRecoveryContext::Disable() {
+#if LLVM_ENABLE_THREADS
   std::lock_guard<std::mutex> L(getCrashRecoveryContextMutex());
+#endif
   if (!gCrashRecoveryEnabled)
     return;
   gCrashRecoveryEnabled = false;
@@ -329,7 +346,16 @@ static void uninstallExceptionOrSignalHandlers() {
   }
 }
 
-#else // !_WIN32
+#elif defined(__wasi__)
+
+// WASI implementation.
+//
+// WASI traps are always fatal, and recovery is not possible. Do nothing.
+
+static void installExceptionOrSignalHandlers() {}
+static void uninstallExceptionOrSignalHandlers() {}
+
+#else // !_WIN32 && !__wasi__
 
 // Generic POSIX implementation.
 //
@@ -417,10 +443,12 @@ bool CrashRecoveryContext::RunSafely(function_ref<void()> Fn) {
     CrashRecoveryContextImpl *CRCI = new CrashRecoveryContextImpl(this);
     Impl = CRCI;
 
+#if HAVE_SETJMP
     CRCI->ValidJumpBuffer = true;
     if (setjmp(CRCI->JumpBuffer) != 0) {
       return false;
     }
+#endif
   }
 
   Fn();
@@ -469,9 +497,11 @@ bool CrashRecoveryContext::throwIfCrash(int RetCode) {
     return false;
 #if defined(_WIN32)
   ::RaiseException(RetCode, 0, 0, NULL);
-#else
+#elif HAVE_RAISE
   llvm::sys::unregisterHandlers();
   raise(RetCode - 128);
+#else
+  abort();
 #endif
   return true;
 }
