@@ -19,9 +19,11 @@
 #include <optional>
 #include <fcntl.h>
 #include <sys/time.h>
+#if !defined(__wasi__)
 #include <sys/resource.h>
-#include <sys/stat.h>
 #include <signal.h>
+#endif
+#include <sys/stat.h>
 #if defined(HAVE_MALLINFO) || defined(HAVE_MALLINFO2)
 #include <malloc.h>
 #endif
@@ -53,7 +55,8 @@ getRUsageTimes() {
   ::getrusage(RUSAGE_SELF, &RU);
   return {toDuration(RU.ru_utime), toDuration(RU.ru_stime)};
 #else
-#ifndef __MVS__ // Exclude for MVS in case -pedantic is used
+#if !(defined(__MVS__) ||                                                      \
+      defined(__wasi__)) // Exclude in case -pedantic is used
 #warning Cannot get usage times on this platform
 #endif
   return {std::chrono::microseconds::zero(), std::chrono::microseconds::zero()};
@@ -63,7 +66,11 @@ getRUsageTimes() {
 Process::Pid Process::getProcessId() {
   static_assert(sizeof(Pid) >= sizeof(pid_t),
                 "Process::Pid should be big enough to store pid_t");
+#if defined(__wasi__)
+  return Pid(0);
+#else
   return Pid(::getpid());
+#endif
 }
 
 // On Cygwin, getpagesize() returns 64k(AllocationGranularity) and
@@ -136,6 +143,7 @@ void Process::GetTimeUsage(TimePoint<> &elapsed,
 // their operation. To prevent the disk from filling up, this function
 // does what's necessary to prevent their generation.
 void Process::PreventCoreFiles() {
+#ifndef __wasi__
   struct rlimit rlim;
   getrlimit(RLIMIT_CORE, &rlim);
 #ifdef __linux__
@@ -158,6 +166,7 @@ void Process::PreventCoreFiles() {
   rlim.rlim_cur = 0;
 #endif
   setrlimit(RLIMIT_CORE, &rlim);
+#endif
 
 #if defined(HAVE_MACH_MACH_H) && !defined(__GNU__)
   // Disable crash reporting on Mac OS X 10.0-10.4
@@ -245,13 +254,21 @@ std::error_code Process::FixupStandardFileDescriptors() {
 
     if (NullFD == StandardFD)
       FDC.keepOpen();
+#if defined(__wasi__)
+    else // WASI does not have `dup2` by design. Return EBADF.
+#else
     else if (dup2(NullFD, StandardFD) < 0)
+#endif
       return errnoAsErrorCode();
   }
   return std::error_code();
 }
 
 std::error_code Process::SafelyCloseFileDescriptor(int FD) {
+#if defined(__wasi__)
+  ::close(FD);
+  return errnoAsErrorCode();
+#else
   // Create a signal set filled with *all* signals.
   sigset_t FullSet, SavedSet;
   if (sigfillset(&FullSet) < 0 || sigfillset(&SavedSet) < 0)
@@ -284,6 +301,7 @@ std::error_code Process::SafelyCloseFileDescriptor(int FD) {
   if (ErrnoFromClose)
     return std::error_code(ErrnoFromClose, std::generic_category());
   return std::error_code(EC, std::generic_category());
+#endif
 }
 
 bool Process::StandardInIsUserInput() {
@@ -320,7 +338,7 @@ static unsigned getColumns(int FileID) {
   // instead if it isn't available.
   unsigned Columns = 0;
 
-#if defined(HAVE_SYS_IOCTL_H) && !defined(__sun__)
+#if defined(HAVE_SYS_IOCTL_H) && !defined(__sun__) && !defined(__wasi__)
   struct winsize ws;
   if (ioctl(FileID, TIOCGWINSZ, &ws) == 0)
     Columns = ws.ws_col;

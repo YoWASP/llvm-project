@@ -171,7 +171,7 @@ private:
 } // namespace llvm
 
 // Include the platform-specific parts of the class.
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_ON_UNIX) && !defined(__wasi__)
 #include "Unix/Jobserver.inc"
 #elif defined(_WIN32)
 #include "Windows/Jobserver.inc"
@@ -181,6 +181,7 @@ JobserverClientImpl::JobserverClientImpl(const JobserverConfig &Config) {}
 JobserverClientImpl::~JobserverClientImpl() = default;
 JobSlot JobserverClientImpl::tryAcquire() { return JobSlot(); }
 void JobserverClientImpl::release(JobSlot Slot) {}
+bool areFdsValid(int ReadFD, int WriteFD) { return false; }
 #endif
 
 namespace llvm {

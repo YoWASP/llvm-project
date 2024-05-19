@@ -75,7 +75,7 @@ void lld::unlinkAsync(StringRef path) {
       sys::fs::remove(tmpName);
   }
   sys::fs::remove(path);
-#else
+#elif !defined(__wasi__)
   if (parallel::strategy.ThreadsRequested == 1)
     return;
 

@@ -10,7 +10,7 @@
 #include "llvm/Config/config.h"
 #include "llvm/Support/Compiler.h"
 
-#ifdef LLVM_ON_UNIX
+#if defined(LLVM_ON_UNIX) && !defined(__wasi__)
 # include <sys/resource.h> // for getrlimit
 #endif
 
@@ -42,7 +42,7 @@ uintptr_t llvm::getStackPointer() {
 }
 
 unsigned llvm::getDefaultStackSize() {
-#ifdef LLVM_ON_UNIX
+#if defined(LLVM_ON_UNIX) && !defined(__wasi__)
   rlimit RL;
   getrlimit(RLIMIT_STACK, &RL);
   return RL.rlim_cur;
